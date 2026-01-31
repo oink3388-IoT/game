@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Steve 的復古街機遊戲合集</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Press Start 2P', 'Segoe UI', monospace;
+      background: linear-gradient(135deg, #0c0c0c 0%, #1a0033 25%, #330066 50%, #1a0033 75%, #0c0c0c 100%);
+      background-size: 400% 400%;
+      animation: gradientShift 15s ease infinite;
+      color: #00ff41;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      position: relative;
+    }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    canvas#particles {
+      position: fixed; top: 0; left: 0; z-index: -1; pointer-events: none;
+    }
+    header {
+      text-align: center;
+      padding: 40px 20px;
+      position: relative;
+      z-index: 10;
+    }
+    h1 {
+      font-size: 3.5rem;
+      text-shadow: 0 0 20px #00ff41, 0 0 40px #00ff41;
+      margin: 0;
+      animation: glow 2s ease-in-out infinite alternate;
+    }
+    @keyframes glow {
+      from { text-shadow: 0 0 20px #00ff41, 0 0 40px #00ff41; }
+      to { text-shadow: 0 0 30px #ff00ff, 0 0 60px #ff00ff; }
+    }
+    .subtitle {
+      font-size: 1.5rem;
+      opacity: 0.9;
+      margin: 20px 0 40px;
+      color: #fff;
+    }
+    #menu, #game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 20px 40px;
+      max-width: 1200px;
+      margin: 0 auto;
+      transition: opacity 0.5s ease;
+    }
+    #game-container { display: none; width: 100%; height: 100vh; }
+    .game-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 30px;
+      width: 100%;
+    }
+    .game-card {
+      background: rgba(0, 255, 65, 0.1);
+      border: 2px solid #00ff41;
+      border-radius: 15px;
+      padding: 25px;
+      text-align: center;
+      transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      backdrop-filter: blur(10px);
+      position: relative;
+      overflow: hidden;
+    }
+    .game-card::before {
+      content: '';
+      position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(0,255,65,0.3), transparent);
+      transition: left 0.5s;
+    }
+    .game-card:hover::before { left: 100%; }
+    .game-card:hover {
+      transform: translateY(-15px) scale(1.05);
+      box-shadow: 0 25px 50px rgba(0,255,65,0.4);
+      border-color: #ff00ff;
+      background: rgba(255,0,255,0.15);
+    }
+    .game-thumbnail {
+      width: 100%;
+      height: 160px;
+      object-fit: cover;
+      border-radius: 10px;
+      margin-bottom: 15px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+    }
+    .game-title {
+      font-size: 1.6rem;
+      margin: 10px 0;
+      font-weight: bold;
+      color: #00ff41;
+    }
+    .game-desc {
+      font-size: 1rem;
+      opacity: 0.8;
+      margin-bottom: 20px;
+      color: #ccc;
+    }
+    .play-btn {
+      background: linear-gradient(45deg, #00ff41, #ff00ff);
+      border: none;
+      padding: 12px 30px;
+      font-size: 1.1rem;
+      font-family: inherit;
+      color: #000;
+      border-radius: 25px;
+      cursor: pointer;
+      transition: all 0.3s;
+      box-shadow: 0 5px 15px rgba(0,255,65,0.4);
+    }
+    .play-btn:hover {
+      transform: scale(1.1);
+      box-shadow: 0 10px 25px rgba(255,0,255,0.6);
+    }
+    #back-btn {
+      position: fixed; top: 20px; right: 20px;
+      background: rgba(0,0,0,0.7);
+      border: 2px solid #00ff41;
+      color: #00ff41;
+      padding: 10px 20px;
+      font-family: inherit;
+      border-radius: 20px;
+      cursor: pointer;
+      z-index: 100;
+      transition: all 0.3s;
+    }
+    #back-btn:hover {
+      background: #00ff41;
+      color: #000;
+      box-shadow: 0 5px 20px #00ff41;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      border-radius: 10px;
+      box-shadow: 0 0 50px rgba(0,255,65,0.5);
+    }
+    footer {
+      text-align: center;
+      padding: 30px;
+      font-size: 0.9rem;
+      opacity: 0.7;
+      margin-top: auto;
+      color: #888;
+    }
+    @media (max-width: 768px) {
+      h1 { font-size: 2.5rem; }
+      .game-list { grid-template-columns: 1fr; gap: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="particles"></canvas>
+
+  <header>
+    <h1><i class="fas fa-gamepad"></i> 復古街機遊戲合集 <i class="fas fa-gamepad"></i></h1>
+    <p class="subtitle">點擊遊戲開始單頁遊玩！（無需跳轉）</p>
+  </header>
+
+  <div id="menu">
+    <div class="game-list">
+
+      <div class="game-card" data-game="bees.html">
+        <img class="game-thumbnail" src="https://i.ytimg.com/vi/MCm7dVX11iw/maxresdefault.jpg" alt="Bees 遊戲縮圖">
+        <div class="game-title">🐝 Bees</div>
+        <p class="game-desc">蜜蜂大戰！復古射擊冒險</p>
+        <button class="play-btn" onclick="loadGame('bees.html')">
+          <i class="fas fa-play"></i> 開始遊戲
+        </button>
+      </div>
+
+      <div class="game-card" data-game="ff.html">
+        <img class="game-thumbnail" src="https://media.istockphoto.com/id/1475014075/video/spaceship-firing-video-game-animation-concept-pixel-art.jpg?s=640x640&k=20&c=Xn3bQjDwzL3684ROeKTuUX0076jDpEA5A0pCS1wk53g=" alt="Space Warrior 遊戲縮圖">
+        <div class="game-title">🚀 Space Warrior</div>
+        <p class="game-desc">太空戰士，消滅敵艦！</p>
+        <button class="play-btn" onclick="loadGame('ff.html')">
+          <i class="fas fa-play"></i> 開始遊戲
+        </button>
+      </div>
+
+      <div class="game-card" data-game="galaga.html">
+        <img class="game-thumbnail" src="https://w0.peakpx.com/wallpaper/918/900/HD-wallpaper-galaga-game-retro-old.jpg" alt="Galaga Pro 遊戲縮圖">
+        <div class="game-title">🛸 Galaga Pro</div>
+        <p class="game-desc">經典 Galaga 升級版</p>
+        <button class="play-btn" onclick="loadGame('galaga.html')">
+          <i class="fas fa-play"></i> 開始遊戲
+        </button>
+      </div>
+
+      <div class="game-card" data-game="invader.html">
+        <img class="game-thumbnail" src="https://media.istockphoto.com/id/1805827733/video/vintage-retro-pixel-art-style-ufo-space-battle-video-game-cartoon-animation-4k.jpg?s=640x640&k=20&c=2xmorfu4sVssS7vi4FFJkA_wZiZaHOuR3k_GJPOuqLU=" alt="Space Invaders 遊戲縮圖">
+        <div class="game-title">👾 Space Invaders</div>
+        <p class="game-desc">太空侵略者經典再現</p>
+        <button class="play-btn" onclick="loadGame('invader.html')">
+          <i class="fas fa-play"></i> 開始遊戲
+        </button>
+      </div>
+
+      <div class="game-card" data-game="snake.html">
+        <img class="game-thumbnail" src="https://wallpapers.com/images/featured/snake-game-background-dwms1mebfsdf9jfp.jpg" alt="Snake 遊戲縮圖">
+        <div class="game-title">🐍 Snake</div>
+        <p class="game-desc">貪吃蛇！吃到最大</p>
+        <button class="play-btn" onclick="loadGame('snake.html')">
+          <i class="fas fa-play"></i> 開始遊戲
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="game-container">
+    <button id="back-btn" onclick="backToMenu()">
+      <i class="fas fa-arrow-left"></i> 返回選單
+    </button>
+    <iframe id="game-iframe"></iframe>
+  </div>
+
+  <footer>
+    全部純 HTML + JavaScript 製作 • 2026 © Steve • <i class="fas fa-heart" style="color:#ff00ff;"></i> 台北
+  </footer>
+
+  <script>
+    // 粒子背景效果
+    const canvas = document.getElementById('particles');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    let particles = [];
+    for (let i = 0; i < 100; i++) {
+      particles.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: (Math.random() - 0.5) * 0.5,
+        radius: Math.random() * 2 + 1
+      });
+    }
+    function animateParticles() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0, 255, 65, ${Math.random() * 0.5})`;
+        ctx.fill();
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+      });
+      requestAnimationFrame(animateParticles);
+    }
+    animateParticles();
+    window.addEventListener('resize', () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+
+    // 單頁應用切換
+    function loadGame(gameUrl) {
+      document.getElementById('menu').style.display = 'none';
+      document.getElementById('game-container').style.display = 'flex';
+      document.getElementById('game-iframe').src = gameUrl;
+      document.body.style.overflow = 'hidden';
+    }
+    function backToMenu() {
+      document.getElementById('game-container').style.display = 'none';
+      document.getElementById('menu').style.display = 'flex';
+      document.getElementById('game-iframe').src = '';
+      document.body.style.overflow = 'auto';
+    }
+  </script>
+</body>
+</html>
