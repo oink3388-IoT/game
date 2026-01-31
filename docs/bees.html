@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>小蜜蜂入侵地球</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      background: #000;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #game-container {
+      position: relative;
+    }
+    canvas {
+      background: #111;
+      border: 2px solid #444;
+      image-rendering: pixelated;
+    }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #0f0;
+      font-size: 20px;
+      text-shadow: 0 0 5px #0f0;
+      pointer-events: none;
+    }
+    #mute-icon {
+      margin-left: 10px;
+      font-size: 24px;
+    }
+    #game-over {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      color: #f00;
+      font-size: 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-shadow: 0 0 10px #f00;
+      pointer-events: all;
+      cursor: pointer;
+    }
+    #game-over.hidden { display: none; }
+    #instructions {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      color: #0f0;
+      font-size: 14px;
+      text-shadow: 0 0 3px #0f0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <div id="ui">
+    分數: <span id="score">0</span>
+    <span id="mute-icon">🔊</span>
+  </div>
+  <canvas id="canvas" width="400" height="600"></canvas>
+  <div id="instructions">
+    ←→/AD 移動 | 空白/↑/W 射擊 | M 靜音 | Game Over 點擊重開
+  </div>
+  <div id="game-over" class="hidden">
+    GAME OVER<br>
+    <span style="font-size:32px; margin-top:20px;">按空白鍵或點擊重新開始</span>
+  </div>
+</div>
+
+<script>
+// ==================== 小蜜蜂遊戲 主程式 ====================
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const scoreElement = document.getElementById('score');
+const muteIcon = document.getElementById('mute-icon');
+const gameOverScreen = document.getElementById('game-over');
+
+let score = 0;
+let gameRunning = true;
+let muted = false;
+let audioCtx;
+let bgOscillator, bgGain, bgLfo, bgLfoGain;
+
+// 初始化 AudioContext
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+// 播放單音
+function playTone(frequency, duration, type = 'sine', volume = 0.1) {
+  if (muted || !audioCtx) return;
+
+  let oscillator = audioCtx.createOscillator();
+  let gainNode = audioCtx.createGain();
+
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  oscillator.frequency.value = frequency;
+  oscillator.type = type;
+
+  gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+
+  oscillator.start(audioCtx.currentTime);
+  oscillator.stop(audioCtx.currentTime + duration);
+}
+
+// 射擊音效
+function playShoot() {
+  playTone(800, 0.08, 'square', 0.25);
+  playTone(1200, 0.08, 'square', 0.25);
+}
+
+// 擊中音效
+function playHit() {
+  playTone(220, 0.15, 'sawtooth', 0.18);
+}
+
+// Game Over 音效（下降音階）
+function playGameOver() {
+  let freq = 500;
+  for (let i = 0; i < 12; i++) {
+    setTimeout(() => {
+      playTone(freq, 0.12, 'sine', 0.2);
+    }, i * 80);
+    freq *= 0.88;
+  }
+}
+
+// 啟動背景音樂（太空嗡嗡聲 + 慢LFO調製）
+function startBGM() {
+  if (bgOscillator) return; // 已啟動
+
+  bgOscillator = audioCtx.createOscillator();
+  bgGain = audioCtx.createGain();
+  bgLfo = audioCtx.createOscillator();
+  bgLfoGain = audioCtx.createGain();
+
+  bgOscillator.frequency.value = 110; // 低頻基礎音
+  bgOscillator.type = 'sine';
+
+  bgLfo.frequency.value = 0.3; // 慢速LFO
+  bgLfo.type = 'sine';
+  bgLfoGain.gain.value = 25; // LFO 幅度
+
+  bgLfo.connect(bgLfoGain);
+  bgLfoGain.connect(bgOscillator.frequency);
+
+  bgOscillator.connect(bgGain);
+  bgGain.connect(audioCtx.destination);
+
+  bgGain.gain.value = 0.035;
+
+  bgOscillator.start();
+  bgLfo.start();
+}
+
+// 停止BGM
+function stopBGM() {
+  if (bgGain) {
+    bgGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1);
+    setTimeout(() => {
+      if (bgOscillator) bgOscillator.stop();
+      if (bgLfo) bgLfo.stop();
+    }, 1000);
+  }
+}
+
+// 玩家（飛船）
+const player = {
+  x: canvas.width / 2 - 25,
+  y: canvas.height - 60,
+  width: 50,
+  height: 30,
+  speed: 5
+};
+
+// 子彈
+const bullets = [];
+const bulletSpeed = 7;
+
+// 敵人（蜜蜂群）
+const enemies = [];
+const enemyRows = 5;
+const enemyCols = 8;
+const enemyWidth = 40;
+const enemyHeight = 30;
+let enemySpeed = 1;
+let enemyDirection = 1;
+let enemyDrop = 40;
+
+// 初始化敵人
+function initEnemies() {
+  enemies.length = 0;
+  for (let row = 0; row < enemyRows; row++) {
+    for (let col = 0; col < enemyCols; col++) {
+      enemies.push({
+        x: 40 + col * (enemyWidth + 20),
+        y: 40 + row * (enemyHeight + 20),
+        width: enemyWidth,
+        height: enemyHeight,
+        alive: true
+      });
+    }
+  }
+}
+
+// 按鍵狀態
+const keys = {};
+
+// 監聽鍵盤
+window.addEventListener('keydown', e => {
+  // 首次互動啟動音頻
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+
+  keys[e.key] = true;
+
+  // M 靜音切換
+  if (e.key.toLowerCase() === 'm') {
+    muted = !muted;
+    muteIcon.textContent = muted ? '🔇' : '🔊';
+  }
+
+  if (!gameRunning && (e.key === ' ' || e.key === 'Enter')) {
+    resetGame();
+  }
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// 點擊畫面重開 + 啟動音頻
+gameOverScreen.addEventListener('click', () => {
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+  if (!gameRunning) resetGame();
+});
+
+// 重置遊戲
+function resetGame() {
+  score = 0;
+  scoreElement.textContent = score;
+  player.x = canvas.width / 2 - 25;
+  bullets.length = 0;
+  initEnemies();
+  enemySpeed = 1;
+  gameRunning = true;
+  gameOverScreen.classList.add('hidden');
+
+  // 重啟BGM
+  stopBGM();
+  setTimeout(startBGM, 200);
+}
+
+// 更新
+function update() {
+  if (!gameRunning) return;
+
+  // 玩家移動
+  if (keys['ArrowLeft'] || keys['a']) {
+    player.x -= player.speed;
+  }
+  if (keys['ArrowRight'] || keys['d']) {
+    player.x += player.speed;
+  }
+  player.x = Math.max(10, Math.min(canvas.width - player.width - 10, player.x));
+
+  // 射擊
+  if (keys[' '] || keys['ArrowUp'] || keys['w']) {
+    if (!keys['shotFired']) {
+      bullets.push({
+        x: player.x + player.width / 2 - 3,
+        y: player.y,
+        width: 6,
+        height: 14
+      });
+      playShoot();
+      keys['shotFired'] = true;
+    }
+  } else {
+    keys['shotFired'] = false;
+  }
+
+  // 子彈移動 & 碰撞
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.y -= bulletSpeed;
+
+    if (b.y < -20) {
+      bullets.splice(i, 1);
+      continue;
+    }
+
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (!e.alive) continue;
+
+      if (
+        b.x < e.x + e.width &&
+        b.x + b.width > e.x &&
+        b.y < e.y + e.height &&
+        b.y + b.height > e.y
+      ) {
+        e.alive = false;
+        bullets.splice(i, 1);
+        score += 10;
+        scoreElement.textContent = score;
+        playHit();
+
+        // 加速
+        if (score % 100 === 0) enemySpeed += 0.4;
+
+        break;
+      }
+    }
+  }
+
+  // 敵人移動
+  let touchEdge = false;
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    e.x += enemySpeed * enemyDirection;
+
+    if (e.x <= 10 || e.x + e.width >= canvas.width - 10) {
+      touchEdge = true;
+    }
+
+    // 敵人碰到玩家 → Game Over
+    if (
+      e.y + e.height > player.y &&
+      e.x < player.x + player.width &&
+      e.x + e.width > player.x
+    ) {
+      gameRunning = false;
+      gameOverScreen.classList.remove('hidden');
+      playGameOver();
+      stopBGM();
+      return;
+    }
+  }
+
+  // 邊界反向 + 下移
+  if (touchEdge) {
+    enemyDirection *= -1;
+    for (const e of enemies) {
+      if (e.alive) e.y += enemyDrop;
+    }
+  }
+
+  // 全部敵人都死光 → 下一波
+  if (enemies.every(e => !e.alive)) {
+    initEnemies();
+    enemySpeed += 0.6;
+  }
+}
+
+// 畫圖
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 畫玩家（簡單三角飛船）
+  ctx.fillStyle = '#0f8';
+  ctx.beginPath();
+  ctx.moveTo(player.x + player.width/2, player.y);
+  ctx.lineTo(player.x, player.y + player.height);
+  ctx.lineTo(player.x + player.width, player.y + player.height);
+  ctx.closePath();
+  ctx.fill();
+
+  // 畫子彈
+  ctx.fillStyle = '#ff0';
+  for (const b of bullets) {
+    ctx.fillRect(b.x, b.y, b.width, b.height);
+  }
+
+  // 畫敵人（簡單的蜜蜂形狀）
+  ctx.fillStyle = '#f80';
+  for (const e of enemies) {
+    if (!e.alive) continue;
+
+    ctx.beginPath();
+    ctx.arc(e.x + e.width/2, e.y + e.height/2, e.width/2 * 0.8, 0, Math.PI*2);
+    ctx.fill();
+
+    // 眼睛
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(e.x + e.width*0.35, e.y + e.height*0.4, 5, 0, Math.PI*2);
+    ctx.arc(e.x + e.width*0.65, e.y + e.height*0.4, 5, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#f80'; // 重置顏色
+}
+
+// 遊戲主迴圈
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// 啟動！
+initAudio();
+initEnemies();
+setTimeout(() => {
+  if (audioCtx) startBGM();
+}, 500);
+gameLoop();
+
+</script>
+</body>
+</html>
