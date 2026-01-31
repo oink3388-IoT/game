@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>古早街機 - 太空戰士 (Space Warrior)</title>
+  <style>
+    body {
+      margin: 0;
+      background: radial-gradient(circle, #000022, #000000);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #00ffaa;
+      touch-action: none;
+    }
+    #game-container {
+      position: relative;
+    }
+    canvas {
+      image-rendering: pixelated;
+      background: linear-gradient(to bottom, #000033, #000011);
+      border: 4px solid #00ffaa;
+      box-shadow: 0 0 40px #00ffaa;
+    }
+    #ui {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      font-size: 22px;
+      text-shadow: 0 0 10px #00ffaa;
+    }
+    #high-score {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      font-size: 22px;
+      color: #ffaa00;
+      text-shadow: 0 0 10px #ffaa00;
+    }
+    #powerup {
+      position: absolute;
+      top: 80px;
+      left: 15px;
+      font-size: 18px;
+      color: #ff44ff;
+    }
+    #message {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 48px;
+      font-weight: bold;
+      color: #ffff00;
+      text-shadow: 0 0 30px #ff0000;
+      pointer-events: none;
+      display: none;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+      50% { transform: translate(-50%, -50%) scale(1.05); opacity: 0.7; }
+    }
+    #instructions {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 16px;
+      color: #00ffaa;
+      text-align: center;
+      text-shadow: 0 0 5px #00ffaa;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="ui">
+      <div>分數: <span id="score">0</span></div>
+      <div>關卡: <span id="level">1</span></div>
+      <div>生命: <span id="lives">3</span></div>
+    </div>
+    <div id="high-score">最高分: <span id="highscore">0</span></div>
+    <div id="powerup">武器: 單彈</div>
+    <canvas id="canvas" width="400" height="600"></canvas>
+    <div id="message">GAME OVER<br>按空白鍵重新開始</div>
+    <div id="instructions">
+      ← → / A D 移動 | 空白射擊 | P 暫停
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    // UI
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level');
+    const livesEl = document.getElementById('lives');
+    const highscoreEl = document.getElementById('highscore');
+    const powerupEl = document.getElementById('powerup');
+    const message = document.getElementById('message');
+
+    // 遊戲狀態
+    let gameState = 'menu';
+    let score = 0;
+    let highScore = localStorage.getItem('spaceWarriorHighScore') || 0;
+    highscoreEl.textContent = highScore;
+    let level = 1;
+    let lives = 3;
+    let keys = {};
+    let lastShootTime = 0;
+    const SHOOT_COOLDOWN = 150;
+    let paused = false;
+    let frameCount = 0;
+
+    // 武器升級
+    let weaponLevel = 0; // 0:單彈, 1:三彈, 2:雷射
+    let weaponTimer = 0;
+    const WEAPON_DURATION = 20000; // 20秒
+
+    // Audio
+    let audioCtx;
+    function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    function playSound(freqs, duration, type = 'square', vol = 0.2) {
+      if (!audioCtx) return;
+      try {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(freqs[0], audioCtx.currentTime);
+        if (freqs.length > 1) o.frequency.linearRampToValueAtTime(freqs[1], audioCtx.currentTime + duration);
+        g.gain.setValueAtTime(vol, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        o.start(audioCtx.currentTime);
+        o.stop(audioCtx.currentTime + duration);
+      } catch(e) {}
+    }
+    const sounds = {
+      shoot: () => playSound([1000, 800], 0.08, 'sawtooth'),
+      triple: () => playSound([1000, 1200, 800], 0.12, 'sawtooth'),
+      laser: () => playSound([600, 1200], 0.15, 'sawtooth'),
+      powerup: () => playSound([440, 660, 880], 0.4, 'sine'),
+      explode: () => playSound([300, 150], 0.2, 'sawtooth'),
+      boss: () => playSound([100, 200, 100], 1.0, 'sawtooth'),
+      hurt: () => playSound([80, 40], 0.5, 'sawtooth')
+    };
+
+    // 玩家 (戰士飛船)
+    const player = {
+      x: WIDTH / 2 - 20,
+      y: HEIGHT - 80,
+      width: 40,
+      height: 30,
+      speed: 6,
+      invincible: 0
+    };
+
+    // 子彈
+    const playerBullets = [];
+    const BULLET_SPEED = 10;
+    const enemyBullets = [];
+    const ENEMY_BULLET_SPEED = 4;
+
+    // 敵人 & Boss
+    const enemies = [];
+    let boss = null;
+    let enemySpawnTimer = 0;
+    let difficulty = 1; // 從1開始緩慢增加
+
+    // 道具
+    const powerups = [];
+
+    // 粒子
+    const particles = [];
+
+    // 星星背景
+    const stars = [];
+    for (let i = 0; i < 120; i++) {
+      stars.push({
+        x: Math.random() * WIDTH,
+        y: Math.random() * HEIGHT,
+        speed: 0.5 + Math.random() * 2,
+        size: 0.8 + Math.random() * 1.5
+      });
+    }
+
+    // 繪製戰士飛船
+    function drawPlayer(ctx, x, y, invincible = false) {
+      if (invincible > 0 && Math.floor(frameCount / 4) % 2 === 0) return;
+      ctx.save();
+      ctx.translate(x + 20, y + 15);
+      // 船身 (藍綠戰士風)
+      ctx.fillStyle = '#00ccff';
+      ctx.beginPath();
+      ctx.moveTo(0, -18);
+      ctx.lineTo(-15, 8);
+      ctx.lineTo(-8, 15);
+      ctx.lineTo(0, 12);
+      ctx.lineTo(8, 15);
+      ctx.lineTo(15, 8);
+      ctx.closePath();
+      ctx.fill();
+      // 翼
+      ctx.fillStyle = '#0088bb';
+      ctx.beginPath();
+      ctx.moveTo(-12, -2);
+      ctx.lineTo(-22, 10);
+      ctx.lineTo(-15, 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(12, -2);
+      ctx.lineTo(22, 10);
+      ctx.lineTo(15, 10);
+      ctx.closePath();
+      ctx.fill();
+      // 駕駛艙
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(-5, -8, 10, 6);
+      // 引擎
+      ctx.fillStyle = '#ffaa00';
+      ctx.fillRect(-3, 12, 6, 10);
+      ctx.fillStyle = '#ffff44';
+      ctx.fillRect(-1.5, 18, 3, 4);
+      ctx.restore();
+    }
+
+    // 繪製敵人
+    function drawEnemy(ctx, x, y, type) {
+      ctx.save();
+      ctx.translate(x + 16, y + 16);
+      let color;
+      switch(type) {
+        case 0: // 小型追擊
+          color = '#ff4444';
+          ctx.fillStyle = color;
+          ctx.fillRect(-10, -8, 20, 16);
+          ctx.fillStyle = '#cc0000';
+          ctx.fillRect(-6, -12, 12, 4);
+          break;
+        case 1: // 射擊機
+          color = '#ff8844';
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(0, -4, 12, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#cc5500';
+          ctx.fillRect(-14, 4, 28, 8);
+          break;
+        case 2: // 編隊兵
+          color = '#44ff44';
+          ctx.fillStyle = color;
+          ctx.fillRect(-12, -6, 24, 12);
+          ctx.fillStyle = '#00aa00';
+          ctx.fillRect(-8, -10, 16, 4);
+          break;
+      }
+      // 眼睛
+      ctx.fillStyle = '#000';
+      ctx.fillRect(-5, -5, 4, 4);
+      ctx.fillRect(1, -5, 4, 4);
+      ctx.restore();
+    }
+
+    // Boss
+    function drawBoss(ctx, x, y) {
+      ctx.save();
+      ctx.translate(x + 60, y + 40);
+      // 巨型敵艦
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(-40, -20, 140, 60);
+      ctx.fillStyle = '#cc0000';
+      ctx.beginPath();
+      ctx.arc(0, -25, 35, 0, Math.PI * 2);
+      ctx.fill();
+      // 炮台 x3
+      ctx.fillStyle = '#ff4444';
+      for (let i = -20; i <= 20; i += 20) {
+        ctx.fillRect(i - 10, 20, 20, 25);
+      }
+      // 眼睛
+      ctx.fillStyle = '#ffff00';
+      ctx.beginPath();
+      ctx.arc(-15, -5, 8, 0, Math.PI * 2);
+      ctx.arc(15, -5, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(-12, -4, 4, 0, Math.PI * 2);
+      ctx.arc(12, -4, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawBullet(ctx, x, y, color = '#ffff88', width = 4, height = 12) {
+      ctx.fillStyle = color;
+      ctx.fillRect(x - width/2, y - height, width, height);
+    }
+
+    function drawLaser(ctx, x1, y1, x2, y2) {
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = '#00ffff';
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    function drawPowerup(ctx, x, y, type) {
+      ctx.save();
+      ctx.translate(x + 12, y + 12);
+      ctx.fillStyle = type === 1 ? '#ff44ff' : type === 2 ? '#44ffff' : '#ffff44';
+      ctx.beginPath();
+      ctx.arc(0, 0, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.fillRect(-2, -2, 4, 4);
+      ctx.restore();
+    }
+
+    function createParticles(x, y, count = 15, color = '#ffff44') {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 10,
+          vy: (Math.random() - 0.5) * 10,
+          life: 40,
+          maxLife: 40,
+          color,
+          size: 2 + Math.random() * 3
+        });
+      }
+    }
+
+    // 生成敵人 (依難度緩增)
+    function spawnEnemy() {
+      const types = [0, 0, 1, 2];
+      const type = types[Math.floor(Math.random() * types.length)];
+      enemies.push({
+        x: Math.random() * (WIDTH - 32),
+        y: -32,
+        width: 32,
+        height: 32,
+        type,
+        speed: 2 + difficulty * 0.5,
+        shootTimer: 0,
+        hp: type === 2 ? 2 : 1
+      });
+    }
+
+    // Boss生成 (每5關)
+    function spawnBoss() {
+      boss = {
+        x: WIDTH / 2 - 60,
+        y: -80,
+        width: 120,
+        height: 80,
+        hp: 20 + level * 5,
+        maxHp: 20 + level * 5,
+        speed: 1 + difficulty * 0.2,
+        shootTimer: 0
+      };
+      sounds.boss();
+    }
+
+    // 更新
+    function update() {
+      if (gameState !== 'playing') return;
+      frameCount++;
+
+      // 玩家移動
+      if (keys['ArrowLeft'] || keys['a'] || keys['A']) player.x -= player.speed;
+      if (keys['ArrowRight'] || keys['d'] || keys['D']) player.x += player.speed;
+      player.x = Math.max(0, Math.min(WIDTH - player.width, player.x));
+
+      // 武器計時
+      if (weaponLevel > 0 && weaponTimer > 0) {
+        weaponTimer--;
+        if (weaponTimer <= 0) {
+          weaponLevel = 0;
+          powerupEl.textContent = '武器: 單彈';
+        }
+      }
+
+      // 射擊
+      if (keys[' '] && Date.now() - lastShootTime > SHOOT_COOLDOWN) {
+        const cx = player.x + player.width / 2;
+        if (weaponLevel === 0) {
+          playerBullets.push({ x: cx, y: player.y });
+          sounds.shoot();
+        } else if (weaponLevel === 1) {
+          playerBullets.push({ x: cx - 15, y: player.y });
+          playerBullets.push({ x: cx, y: player.y });
+          playerBullets.push({ x: cx + 15, y: player.y });
+          sounds.triple();
+        } else {
+          playerBullets.push({ x: cx, y: player.y, laser: true });
+          sounds.laser();
+        }
+        lastShootTime = Date.now();
+      }
+
+      // 子彈更新
+      playerBullets.forEach((b, i) => {
+        if (b.laser) {
+          b.y -= BULLET_SPEED * 1.5;
+        } else {
+          b.y -= BULLET_SPEED;
+        }
+        if (b.y < -20) playerBullets.splice(i, 1);
+      });
+      enemyBullets.forEach((b, i) => {
+        b.y += ENEMY_BULLET_SPEED;
+        if (b.y > HEIGHT) enemyBullets.splice(i, 1);
+      });
+
+      // 星星
+      stars.forEach(s => {
+        s.y += s.speed;
+        if (s.y > HEIGHT) s.y = 0;
+      });
+
+      // 粒子
+      particles.forEach((p, i) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        p.vx *= 0.96;
+        p.vy *= 0.96;
+        if (p.life <= 0) particles.splice(i, 1);
+      });
+
+      // 生成敵人 (第一關慢)
+      enemySpawnTimer++;
+      const spawnRate = Math.max(120 - difficulty * 10, 60); // 第一關120幀一次，漸快
+      if (enemySpawnTimer > spawnRate) {
+        spawnEnemy();
+        enemySpawnTimer = 0;
+      }
+
+      // Boss檢查
+      if (!boss && enemies.length === 0 && frameCount % 300 === 0 && level % 5 === 0) {
+        spawnBoss();
+      }
+
+      // 敵人更新
+      enemies.forEach((e, i) => {
+        e.y += e.speed;
+        if (e.y > HEIGHT) {
+          enemies.splice(i, 1);
+          return;
+        }
+        // 追擊
+        if (e.type === 0) {
+          e.x += (player.x - e.x + player.width/2 - e.width/2) * 0.05;
+        }
+        // 射擊
+        e.shootTimer++;
+        if (e.shootTimer > 90 - difficulty * 5 && Math.random() < 0.02) {
+          enemyBullets.push({ x: e.x + e.width/2, y: e.y + e.height });
+          e.shootTimer = 0;
+        }
+      });
+
+      // Boss更新
+      if (boss) {
+        boss.y += boss.speed;
+        if (boss.y > 50) boss.speed = Math.sin(frameCount * 0.02) * 0.5;
+        boss.shootTimer++;
+        if (boss.shootTimer > 30) {
+          enemyBullets.push({ x: boss.x + 20, y: boss.y + boss.height });
+          enemyBullets.push({ x: boss.x + 60, y: boss.y + boss.height });
+          enemyBullets.push({ x: boss.x + 100, y: boss.y + boss.height });
+          boss.shootTimer = 0;
+        }
+        if (boss.y > HEIGHT) boss = null;
+      }
+
+      // 碰撞: 玩家彈 vs 敵人/Boss
+      for (let i = playerBullets.length - 1; i >= 0; i--) {
+        const pb = playerBullets[i];
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const e = enemies[j];
+          if (pb.x > e.x && pb.x < e.x + e.width &&
+              pb.y > e.y && pb.y < e.y + e.height) {
+            e.hp--;
+            playerBullets.splice(i, 1);
+            if (e.hp <= 0) {
+              enemies.splice(j, 1);
+              score += 100 * level;
+              createParticles(e.x + e.width/2, e.y + e.height/2);
+              sounds.explode();
+              // 道具掉落
+              if (Math.random() < 0.2) {
+                powerups.push({
+                  x: e.x + e.width/2,
+                  y: e.y + e.height/2,
+                  type: Math.floor(Math.random() * 3),
+                  speed: 2
+                });
+              }
+            }
+            break;
+          }
+        }
+        // vs Boss
+        if (boss && pb.x > boss.x && pb.x < boss.x + boss.width &&
+            pb.y > boss.y && pb.y < boss.y + boss.height) {
+          boss.hp -= pb.laser ? 2 : 1;
+          playerBullets.splice(i, 1);
+          createParticles(pb.x, pb.y);
+          if (boss.hp <= 0) {
+            score += 5000 * level;
+            createParticles(boss.x + boss.width/2, boss.y + boss.height/2, 40, '#ff0000');
+            boss = null;
+            nextLevel();
+          }
+        }
+      }
+
+      // 玩家 vs 敵彈/敵人/Boss
+      if (player.invincible === 0) {
+        enemyBullets.forEach((eb, i) => {
+          if (eb.x > player.x && eb.x < player.x + player.width &&
+              eb.y > player.y && eb.y < player.y + player.height) {
+            enemyBullets.splice(i, 1);
+            loseLife();
+          }
+        });
+        enemies.forEach(e => {
+          if (player.x < e.x + e.width && player.x + player.width > e.x &&
+              player.y < e.y + e.height && player.y + player.height > e.y) {
+            loseLife();
+          }
+        });
+        if (boss && player.x < boss.x + boss.width && player.x + player.width > boss.x &&
+            player.y < boss.y + boss.height && player.y + player.height > boss.y) {
+          loseLife();
+        }
+      }
+
+      // 道具更新 & 收集
+      powerups.forEach((p, i) => {
+        p.y += p.speed;
+        if (p.y > HEIGHT) powerups.splice(i, 1);
+        if (p.x > player.x && p.x < player.x + player.width &&
+            p.y > player.y && p.y < player.y + player.height) {
+          powerups.splice(i, 1);
+          weaponLevel = p.type + 1;
+          weaponTimer = WEAPON_DURATION;
+          powerupEl.textContent = p.type === 0 ? '武器: 三彈' : p.type === 1 ? '武器: 雷射' : '武器: 超雷射';
+          sounds.powerup();
+        }
+      });
+
+      // 下一關
+      if (enemies.length === 0 && !boss) {
+        nextLevel();
+      }
+
+      player.invincible > 0 && player.invincible--;
+      difficulty = Math.min(level * 0.5 + 1, 5); // 緩慢增加難度
+      scoreEl.textContent = score;
+      levelEl.textContent = level;
+    }
+
+    function loseLife() {
+      lives--;
+      livesEl.textContent = lives;
+      player.invincible = 120;
+      player.x = WIDTH / 2 - 20;
+      sounds.hurt();
+      if (lives <= 0) {
+        if (score > highScore) {
+          highScore = score;
+          highscoreEl.textContent = highScore;
+          localStorage.setItem('spaceWarriorHighScore', highScore);
+        }
+        gameOver();
+      }
+    }
+
+    function nextLevel() {
+      level++;
+      levelEl.textContent = level;
+      score += 1000 * level;
+      frameCount = 0;
+      // Boss每5關
+      if (level % 5 === 1) spawnBoss();
+    }
+
+    function gameOver() {
+      gameState = 'gameover';
+      message.style.display = 'block';
+    }
+
+    function startGame() {
+      gameState = 'playing';
+      score = 0;
+      level = 1;
+      lives = 3;
+      weaponLevel = 0;
+      weaponTimer = 0;
+      difficulty = 1;
+      scoreEl.textContent = score;
+      levelEl.textContent = level;
+      livesEl.textContent = lives;
+      powerupEl.textContent = '武器: 單彈';
+      player.x = WIDTH / 2 - 20;
+      player.y = HEIGHT - 80;
+      playerBullets.length = 0;
+      enemyBullets.length = 0;
+      enemies.length = 0;
+      powerups.length = 0;
+      particles.length = 0;
+      boss = null;
+      enemySpawnTimer = 0;
+      frameCount = 0;
+      message.style.display = 'none';
+    }
+
+    // 繪製
+    function draw() {
+      ctx.fillStyle = '#000011';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      // 星星
+      ctx.fillStyle = '#aaccff';
+      stars.forEach(s => ctx.fillRect(s.x, s.y, s.size, s.size));
+
+      // 粒子
+      particles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.life / p.maxLife;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+        ctx.restore();
+      });
+
+      if (gameState === 'playing' || gameState === 'paused') {
+        // 玩家
+        drawPlayer(ctx, player.x, player.y, player.invincible > 0);
+
+        // 子彈
+        playerBullets.forEach(b => {
+          if (b.laser) {
+            drawLaser(ctx, b.x, b.y, b.x, b.y + 40);
+          } else {
+            drawBullet(ctx, b.x, b.y);
+          }
+        });
+        enemyBullets.forEach(b => drawBullet(ctx, b.x, b.y, '#ff4400'));
+
+        // 敵人
+        enemies.forEach(e => drawEnemy(ctx, e.x, e.y, e.type));
+
+        // Boss
+        if (boss) {
+          drawBoss(ctx, boss.x, boss.y);
+          // HP條
+          ctx.fillStyle = '#000';
+          ctx.fillRect(10, 50, 120, 12);
+          ctx.fillStyle = '#ff0000';
+          ctx.fillRect(10, 50, (boss.hp / boss.maxHp) * 120, 12);
+        }
+
+        // 道具
+        powerups.forEach(p => drawPowerup(ctx, p.x, p.y, p.type));
+
+        // 生命
+        for (let i = 0; i < lives; i++) {
+          drawPlayer(ctx, 10 + i * 50, 10);
+        }
+      } else if (gameState === 'menu') {
+        ctx.fillStyle = '#00ffaa';
+        ctx.font = 'bold 36px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('太空戰士', WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.font = '24px Courier New';
+        ctx.fillText('按空白鍵開始', WIDTH / 2, HEIGHT / 2 + 30);
+      }
+
+      if (paused) {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 52px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('PAUSED', WIDTH / 2, HEIGHT / 2);
+      }
+    }
+
+    // 遊戲循環
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // 事件
+    window.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      if (e.key === ' ') {
+        e.preventDefault();
+        if (gameState === 'menu' || gameState === 'gameover') {
+          startGame();
+        } else if (gameState === 'playing') {
+          // 射擊 or 暫停? 但按指示: 空白射擊, 點擊暫停? 改為P暫停
+        }
+      }
+      if (e.key.toLowerCase() === 'p' && gameState === 'playing') {
+        paused = !paused;
+      }
+    });
+    window.addEventListener('keyup', e => keys[e.key] = false);
+
+    canvas.addEventListener('click', () => {
+      if (gameState === 'menu' || gameState === 'gameover') startGame();
+      else if (gameState === 'playing') paused = !paused;
+    });
+
+    // 啟動
+    initAudio();
+    gameState = 'menu';
+    gameLoop();
+  </script>
+</body>
+</html>
